@@ -1,4 +1,4 @@
-# SpeechCraft
+# SpeechCraft (haredigital fork)
 
 <p align="center">
   <img src="icon.png" alt="SpeechCraft Icon" width="128" height="128" />
@@ -7,6 +7,33 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Swift 5.5+](https://img.shields.io/badge/Swift-5.5%2B-orange.svg)](https://swift.org) [![Platform: macOS 12+](https://img.shields.io/badge/macOS-12%2B-lightgrey.svg)](https://www.apple.com/macos)
 
 > A lightweight macOS menu‑bar utility that turns your voice into text and smart edits using the OpenAI API.
+
+> **This is a security-hardened fork of [esawtooth/speechcraft](https://github.com/esawtooth/speechcraft).** See [SECURITY_AUDIT.md](SECURITY_AUDIT.md) for the full audit of upstream v1.01 and the rationale for every change in this fork.
+
+## Fork Changes (vs. upstream v1.01)
+
+| Fix | Why |
+|-----|-----|
+| **AppleScript confirmation dialog** | Upstream executes LLM-generated AppleScript directly with no user approval — RCE risk via prompt injection. This fork shows the script and requires explicit "Run Script" click. |
+| **Keychain credential storage** | Upstream stored OpenAI/Azure API keys in plain UserDefaults (`.plist`) — readable by any user-process. This fork stores them in macOS Keychain via `KeychainStore.swift` with one-time migration. |
+| **Temp audio file cleanup** | Upstream wrote `.wav` files to `temporaryDirectory` and never deleted them, leaving voice recordings on disk forever. This fork uses `defer { removeItem }` after every upload. |
+| **Default model: `gpt-4o-mini-transcribe`** | Upstream defaulted to the more expensive `gpt-4o-transcribe`. Mini variant is ~50% cheaper with WER very close to the full model. Switchable in Preferences. |
+| **Removed unused camera entitlement** | Upstream declared `device.camera` but never used webcam APIs (uses `ScreenCaptureKit` instead). Eliminates an entire permission category. |
+
+See [SECURITY_AUDIT.md](SECURITY_AUDIT.md) for the full list of findings, including issues we have NOT yet fixed (sandbox disabled, unvalidated Azure endpoint, no auto-update protection).
+
+## Trust Model
+
+This fork follows a **build-from-source-only** trust model:
+
+1. Clone this repository
+2. Open in Xcode and build the app yourself
+3. Sign with your own developer cert (or run unsigned)
+4. **Do not use prebuilt releases** — they cannot be verified against the source you read
+
+If you trust prebuilt binaries, you might as well use [SuperWhisper](https://superwhisper.com/) — it's a more mature commercial app that also supports `gpt-4o-transcribe` natively.
+
+The whole point of forking and auditing is that **you control which version of the code runs on your Mac**.
 
 ## Table of Contents
 1. [Features](#features)
