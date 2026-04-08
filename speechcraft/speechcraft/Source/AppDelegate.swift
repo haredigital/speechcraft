@@ -22,15 +22,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let silenceLevelThreshold: Float = -30.0
     var isRecording = false
     var audioURL: URL?
-    /// Tracks whether the fn key is currently held down.
-    /// Used to implement push-to-talk: press fn to start recording, release to stop+transcribe.
-    /// Only meaningful state transitions (pressed <-> released) trigger recording changes.
-    private var isFnPressed = false
-    /// Whether the current recording was started via fn push-to-talk (as opposed to Option+S toggle).
-    /// If true, releasing fn will stop the recording. If false, fn release is ignored and
-    /// the user must press Option+S again to stop. This prevents a spurious fn-release
-    /// from cancelling a toggle-started recording.
-    private var recordingStartedByFn = false
+    /// Virtual keycode for the Right Option key. Used as the push-to-talk trigger.
+    /// We can't use fn because macOS consumes it for the system Dictation shortcut
+    /// (AppleFnUsageType=3) BEFORE user event taps see it. Right Option has no default
+    /// system behavior and is rarely used for shortcuts (Left Option = 58 handles those).
+    private static let rightOptionKeyCode: Int64 = 61
+    /// Tracks whether the Right Option key is currently held down.
+    /// Used to implement push-to-talk: press Right Option to start recording,
+    /// release to stop + transcribe. Toggled by each flagsChanged event with keycode 61.
+    private var isPttKeyPressed = false
+    /// Whether the current recording was started via push-to-talk (as opposed to Option+S toggle).
+    /// If true, releasing the PTT key will stop the recording. If false, PTT release is
+    /// ignored — this prevents a stray Right Option tap from cancelling a toggle-started
+    /// recording.
+    private var recordingStartedByPtt = false
     // Instruction recording mode
     var instructionMode = false
     var originalSelectedText: String?
@@ -260,32 +265,40 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func handleEvent(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
-        // Push-to-talk via fn key:
-        // The fn key is a modifier, so it only generates flagsChanged events,
-        // never keyDown. We detect state transitions (pressed <-> released)
-        // via CGEventFlags.maskSecondaryFn and start/stop recording accordingly.
+        // Push-to-talk via Right Option key:
+        // Right Option is a modifier, so it only generates flagsChanged events,
+        // never keyDown. Each press or release of any modifier key fires a
+        // flagsChanged event with the specific virtual keycode of the key that
+        // changed. We detect press vs release by toggling our own tracked state
+        // each time the Right Option keycode (61) appears.
+        //
+        // We can't use the fn key for PTT because macOS intercepts it for the
+        // system Dictation shortcut (AppleFnUsageType=3 on this user's Mac)
+        // before any user event tap sees the press.
         //
         // Only start recording if we're in .ready state (API key configured).
-        // Only stop a recording on fn release if it was started by fn (tracked
-        // via recordingStartedByFn) — this prevents fn release from cancelling
-        // a recording started via the Option+S toggle hotkey.
+        // Only stop a recording on PTT release if it was started by PTT (tracked
+        // via recordingStartedByPtt) — this prevents a stray Right Option tap
+        // from cancelling a recording started via the Option+S toggle hotkey.
         if type == .flagsChanged {
-            let fnNowPressed = event.flags.contains(.maskSecondaryFn)
-            if fnNowPressed != isFnPressed {
-                isFnPressed = fnNowPressed
-                if fnNowPressed {
-                    // fn just pressed → start recording if we're idle and configured
+            let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+            if keyCode == Self.rightOptionKeyCode {
+                // Toggle our tracked state — the first event is a press,
+                // the second is a release, and so on.
+                isPttKeyPressed.toggle()
+                if isPttKeyPressed {
+                    // Just pressed → start recording if idle and configured
                     if !isRecording && transcribeState == .ready {
                         startRecording()
                         isRecording = true
-                        recordingStartedByFn = true
+                        recordingStartedByPtt = true
                     }
                 } else {
-                    // fn just released → stop recording only if fn started it
-                    if isRecording && recordingStartedByFn {
+                    // Just released → stop only if PTT owns this recording
+                    if isRecording && recordingStartedByPtt {
                         stopRecording()
                         isRecording = false
-                        recordingStartedByFn = false
+                        recordingStartedByPtt = false
                     }
                 }
             }
@@ -330,13 +343,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if !isRecording {
             startRecording()
             isRecording = true
-            // Option+S toggle explicitly owns this recording — clear the fn flag
-            // so a stray fn release doesn't cancel it.
-            recordingStartedByFn = false
+            // Option+S toggle explicitly owns this recording — clear the PTT flag
+            // so a stray Right Option release doesn't cancel it.
+            recordingStartedByPtt = false
         } else {
             stopRecording()
             isRecording = false
-            recordingStartedByFn = false
+            recordingStartedByPtt = false
         }
     }
 
