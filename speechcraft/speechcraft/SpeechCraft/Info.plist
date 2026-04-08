@@ -2,8 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>NSCameraUsageDescription</key>
-	<string>Screen recording is required to prompt the LLM</string>
 	<key>CFBundleName</key>
 	<string>SpeechCraft</string>
 	<key>CFBundleDisplayName</key>
