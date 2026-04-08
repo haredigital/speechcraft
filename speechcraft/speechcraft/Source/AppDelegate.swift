@@ -37,7 +37,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case ready, recording, transcribing, error
     }
     // Configurable transcription model and prompt
-    var transcriptionModel = UserDefaults.standard.string(forKey: "TranscriptionModel") ?? "gpt-4o-transcribe"
+    var transcriptionModel = UserDefaults.standard.string(forKey: "TranscriptionModel") ?? "gpt-4o-mini-transcribe"
     let availableModels = ["gpt-4o-transcribe", "gpt-4o-mini-transcribe", "whisper"]
     var transcriptionPrompt = UserDefaults.standard.string(forKey: "TranscriptionPrompt") ?? ""
     
@@ -166,10 +166,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // Silence detection defaults
             "EnableAutoSilenceStop": false,
             "SilenceTimeout": 2.0,
+            // Default transcription model — gpt-4o-mini-transcribe for cost/accuracy balance
+            "TranscriptionModel": "gpt-4o-mini-transcribe",
             // New default: enable GPT-4o proofreading of transcripts
             "EnableProofreading": true,
-            // Default model for GPT-4o proofreading
-            "ProofreadingModel": "gpt-4o",
+            // Default model for proofreading — mini variant to keep costs low
+            "ProofreadingModel": "gpt-4o-mini",
             // Default prompt for transcription
             "TranscriptionPrompt": "Transcribe everything and do not truncate text",
             // Default prompt for AppleScript generation: include activation of target apps

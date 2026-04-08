@@ -102,7 +102,7 @@ struct GeneralSettingsView: View {
 
 // MARK: - Transcription Settings
 struct TranscriptionSettingsView: View {
-    @AppStorage("TranscriptionModel") private var transcriptionModel: String = "gpt-4o-transcribe"
+    @AppStorage("TranscriptionModel") private var transcriptionModel: String = "gpt-4o-mini-transcribe"
     @AppStorage("TranscriptionPrompt") private var transcriptionPrompt: String = ""
     // Control for including screenshots in all GPT requests
     @AppStorage("EnableScreenshots") private var enableScreenshots: Bool = true
