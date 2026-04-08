@@ -22,6 +22,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let silenceLevelThreshold: Float = -30.0
     var isRecording = false
     var audioURL: URL?
+    /// Tracks whether the fn key is currently held down.
+    /// Used to implement push-to-talk: press fn to start recording, release to stop+transcribe.
+    /// Only meaningful state transitions (pressed <-> released) trigger recording changes.
+    private var isFnPressed = false
+    /// Whether the current recording was started via fn push-to-talk (as opposed to Option+S toggle).
+    /// If true, releasing fn will stop the recording. If false, fn release is ignored and
+    /// the user must press Option+S again to stop. This prevents a spurious fn-release
+    /// from cancelling a toggle-started recording.
+    private var recordingStartedByFn = false
     // Instruction recording mode
     var instructionMode = false
     var originalSelectedText: String?
@@ -223,7 +232,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func setupEventTap() {
+        // Watch both keyDown (for hotkeys like Option+S) AND flagsChanged
+        // (for push-to-talk via the fn modifier key, which never fires
+        // keyDown events — it only shows up as a modifier state change).
         let mask = (1 << CGEventType.keyDown.rawValue)
+                 | (1 << CGEventType.flagsChanged.rawValue)
         eventTap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
@@ -247,6 +260,38 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func handleEvent(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        // Push-to-talk via fn key:
+        // The fn key is a modifier, so it only generates flagsChanged events,
+        // never keyDown. We detect state transitions (pressed <-> released)
+        // via CGEventFlags.maskSecondaryFn and start/stop recording accordingly.
+        //
+        // Only start recording if we're in .ready state (API key configured).
+        // Only stop a recording on fn release if it was started by fn (tracked
+        // via recordingStartedByFn) — this prevents fn release from cancelling
+        // a recording started via the Option+S toggle hotkey.
+        if type == .flagsChanged {
+            let fnNowPressed = event.flags.contains(.maskSecondaryFn)
+            if fnNowPressed != isFnPressed {
+                isFnPressed = fnNowPressed
+                if fnNowPressed {
+                    // fn just pressed → start recording if we're idle and configured
+                    if !isRecording && transcribeState == .ready {
+                        startRecording()
+                        isRecording = true
+                        recordingStartedByFn = true
+                    }
+                } else {
+                    // fn just released → stop recording only if fn started it
+                    if isRecording && recordingStartedByFn {
+                        stopRecording()
+                        isRecording = false
+                        recordingStartedByFn = false
+                    }
+                }
+            }
+            return Unmanaged.passUnretained(event)
+        }
+
         if type == .keyDown {
             // Filter to modifier bits only
             let maskFlags: CGEventFlags = [.maskCommand, .maskAlternate, .maskControl, .maskShift]
@@ -285,9 +330,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if !isRecording {
             startRecording()
             isRecording = true
+            // Option+S toggle explicitly owns this recording — clear the fn flag
+            // so a stray fn release doesn't cancel it.
+            recordingStartedByFn = false
         } else {
             stopRecording()
             isRecording = false
+            recordingStartedByFn = false
         }
     }
 
