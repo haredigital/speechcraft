@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		1ED31205E8697569A9A0F979 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1237636B61E66DE9815CAF92 /* KeychainStore.swift */; };
 		F9C02B262DB0EDFC00D6665F /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9C02B242DB0EDFC00D6665F /* AppDelegate.swift */; };
 		F9C02B272DB0EDFC00D6665F /* SpeechCraftApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9C02B252DB0EDFC00D6665F /* SpeechCraftApp.swift */; };
 		F9C02B2A2DB0EE4E00D6665F /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F9C02B292DB0EE4E00D6665F /* AVFoundation.framework */; };
@@ -21,6 +22,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		1237636B61E66DE9815CAF92 /* KeychainStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
 		F9C02B132DB0ED1F00D6665F /* SpeechCraft.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SpeechCraft.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F9C02B242DB0EDFC00D6665F /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		F9C02B252DB0EDFC00D6665F /* SpeechCraftApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechCraftApp.swift; sourceTree = "<group>"; };
@@ -108,6 +110,7 @@
 				F9C02B242DB0EDFC00D6665F /* AppDelegate.swift */,
 				F9C02B252DB0EDFC00D6665F /* SpeechCraftApp.swift */,
 				F9C02B352DB107D400D6665F /* PreferencesView.swift */,
+				1237636B61E66DE9815CAF92 /* KeychainStore.swift */,
 			);
 			path = Source;
 			sourceTree = "<group>";
@@ -197,6 +200,7 @@
 				F9C02B262DB0EDFC00D6665F /* AppDelegate.swift in Sources */,
 				F9C02B362DB107D400D6665F /* PreferencesView.swift in Sources */,
 				F9C02B272DB0EDFC00D6665F /* SpeechCraftApp.swift in Sources */,
+				1ED31205E8697569A9A0F979 /* KeychainStore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

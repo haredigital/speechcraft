@@ -57,15 +57,19 @@ struct PreferencesView: View {
 // MARK: - General Settings
 struct GeneralSettingsView: View {
     @AppStorage("ServiceType") private var serviceType: String = "OpenAI"
-    @AppStorage("OpenAIKey") private var openAIKey: String = ""
     @AppStorage("OpenAIChatModel") private var openAIChatModel: String = "gpt-3.5-turbo"
-    @AppStorage("AzureKey") private var azureKey: String = ""
     @AppStorage("AzureTranscribeEndpoint") private var azureTranscribeEndpoint: String = ""
     @AppStorage("AzureChatEndpoint") private var azureChatEndpoint: String = ""
     // Auto-stop recording on silence
     @AppStorage("EnableAutoSilenceStop") private var enableAutoSilenceStop: Bool = false
     // Duration of silence (in seconds) before auto-stop
     @AppStorage("SilenceTimeout") private var silenceTimeout: Double = 2.0
+
+    // Hardened: API keys live in Keychain, not UserDefaults.
+    // We mirror them into local @State so SwiftUI can bind, and write back
+    // to Keychain on every edit via .onChange.
+    @State private var openAIKey: String = KeychainStore.get("OpenAIKey") ?? ""
+    @State private var azureKey: String = KeychainStore.get("AzureKey") ?? ""
 
     var body: some View {
         Form {
@@ -77,6 +81,9 @@ struct GeneralSettingsView: View {
 
             if serviceType == "OpenAI" {
                 SecureField("API Key", text: $openAIKey)
+                    .onChange(of: openAIKey) { newValue in
+                        KeychainStore.set(newValue, forKey: "OpenAIKey")
+                    }
                 Picker("Chat Model", selection: $openAIChatModel) {
                     Text("gpt-4o").tag("gpt-4o")
                     Text("gpt-4o-mini").tag("gpt-4o-mini")
@@ -84,6 +91,9 @@ struct GeneralSettingsView: View {
                 .pickerStyle(PopUpButtonPickerStyle())
             } else {
                 SecureField("API Key", text: $azureKey)
+                    .onChange(of: azureKey) { newValue in
+                        KeychainStore.set(newValue, forKey: "AzureKey")
+                    }
                 TextField("Transcribe Endpoint", text: $azureTranscribeEndpoint)
                 TextField("Chat Endpoint", text: $azureChatEndpoint)
             }

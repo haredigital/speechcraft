@@ -48,16 +48,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         ServiceType(rawValue: UserDefaults.standard.string(forKey: "ServiceType") ?? "OpenAI") ?? .openAI
     }
     /// OpenAI API key from settings
+    /// Hardened: read API key from Keychain instead of plain UserDefaults.
+    /// See KeychainStore.swift for the migration logic.
     var openAIKey: String? {
-        UserDefaults.standard.string(forKey: "OpenAIKey")
+        KeychainStore.get("OpenAIKey")
     }
     /// OpenAI chat model from settings
     var openAIChatModel: String {
         UserDefaults.standard.string(forKey: "OpenAIChatModel") ?? "gpt-4o"
     }
-    /// Azure API key from settings
+    /// Azure API key — also stored in Keychain.
     var azureKey: String? {
-        UserDefaults.standard.string(forKey: "AzureKey")
+        KeychainStore.get("AzureKey")
     }
     /// Azure transcription endpoint from settings
     var azureTranscribeEndpoint: String? {
@@ -159,6 +161,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // One-time credential migration: move any API keys from plain UserDefaults
+        // to the macOS Keychain. Idempotent — safe to run on every launch.
+        // See KeychainStore.swift for details.
+        KeychainStore.migrateFromUserDefaults(keys: ["OpenAIKey", "AzureKey"])
+
         // Register default preferences
         UserDefaults.standard.register(defaults: [
             // Include screenshots in GPT requests by default
