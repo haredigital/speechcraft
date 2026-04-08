@@ -27,6 +27,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// (AppleFnUsageType=3) BEFORE user event taps see it. Right Option has no default
     /// system behavior and is rarely used for shortcuts (Left Option = 58 handles those).
     private static let rightOptionKeyCode: Int64 = 61
+    /// Virtual keycode for the Right Command key. Used as the "speak selection" (TTS)
+    /// trigger. Tap (without any other key) to speak the current selection via
+    /// AVSpeechSynthesizer; tap again to stop. Chord detection (see chordDetectedWhile-
+    /// RightCmdHeld) ensures Cmd+C, Cmd+V, and other chord shortcuts still work
+    /// normally when the user holds Right Command while pressing another key.
+    private static let rightCommandKeyCode: Int64 = 54
     /// Tracks whether the Right Option key is currently held down.
     /// Used to implement push-to-talk: press Right Option to start recording,
     /// release to stop + transcribe. Toggled by each flagsChanged event with keycode 61.
@@ -36,6 +42,34 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// ignored — this prevents a stray Right Option tap from cancelling a toggle-started
     /// recording.
     private var recordingStartedByPtt = false
+    /// Tracks Right Command press state for the "tap to speak selection" hotkey.
+    /// Toggled on each flagsChanged event with keycode 54.
+    /// `internal` (default) rather than `private` so ClipboardHelper.swift
+    /// extension methods can read it.
+    var isRightCmdPressed = false
+    /// Chord-detection flag: set true when a keyDown fires while Right Command is
+    /// held. If true on release, the press was part of a Cmd-chord shortcut
+    /// (e.g. Cmd+C) and we do NOT fire the TTS action. Reset on each fresh press.
+    var chordDetectedWhileRightCmdHeld = false
+    /// Lazily created speech synthesizer used by the "speak selection" feature.
+    /// AVSpeechSynthesizer requires no entitlements and makes no network calls —
+    /// all voice rendering happens locally via macOS TTS engines. Non-private so
+    /// the extension methods in ClipboardHelper.swift can access it.
+    var speechSynth: AVSpeechSynthesizer?
+
+    /// Tracks whether the most recent insertTranscript() call ended with actual
+    /// whitespace (space, tab, newline). Used to decide whether the NEXT insertion
+    /// should be prefixed with a space to avoid concatenating consecutive dictations.
+    ///
+    /// Crucially, punctuation is NOT treated as a separator — a period ends a
+    /// sentence but still needs a space before the next word ("hello. world",
+    /// not "hello.world"). Only real whitespace characters tell us the cursor
+    /// is already at a clean word boundary.
+    ///
+    /// Starts at true so the first dictation never gets a leading space — we
+    /// assume the user placed their cursor at a sensible position (empty field,
+    /// after a newline, etc.) before dictating the first time.
+    var lastInsertedEndedWithWhitespace = true
     // Instruction recording mode
     var instructionMode = false
     var originalSelectedText: String?
@@ -282,6 +316,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // from cancelling a recording started via the Option+S toggle hotkey.
         if type == .flagsChanged {
             let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+
+            // Right Command — "tap alone to speak selection" (TTS).
+            // We track press and release to detect whether the press was a
+            // standalone tap (no other keys pressed while Cmd was held) or
+            // part of a chord like Cmd+C. Only standalone taps fire TTS.
+            if keyCode == Self.rightCommandKeyCode {
+                isRightCmdPressed.toggle()
+                if isRightCmdPressed {
+                    // Press: start fresh chord tracking
+                    chordDetectedWhileRightCmdHeld = false
+                } else {
+                    // Release: if no other key fired while Cmd was held,
+                    // this was a lone Right Command tap — fire TTS toggle.
+                    if !chordDetectedWhileRightCmdHeld {
+                        toggleSpeakSelection()
+                    }
+                }
+                return Unmanaged.passUnretained(event)
+            }
+
             if keyCode == Self.rightOptionKeyCode {
                 // Toggle our tracked state — the first event is a press,
                 // the second is a release, and so on.
@@ -306,6 +360,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         if type == .keyDown {
+            // If Right Command is currently held and we see any keyDown,
+            // mark the Cmd-tap as a chord — on release we will NOT fire TTS.
+            // This preserves Cmd+C, Cmd+V, and other shortcut behavior.
+            if isRightCmdPressed {
+                chordDetectedWhileRightCmdHeld = true
+            }
             // Filter to modifier bits only
             let maskFlags: CGEventFlags = [.maskCommand, .maskAlternate, .maskControl, .maskShift]
             let rawFlags = event.flags.intersection(maskFlags)
