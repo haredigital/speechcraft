@@ -428,6 +428,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         // Perform request without streaming
         URLSession.shared.dataTask(with: request) { data, response, error in
+            // Always clean up the temp audio file once we've sent it (or failed to)
+            // — security/privacy hardening: avoid leaving recordings on disk forever.
+            defer { try? FileManager.default.removeItem(at: fileURL) }
+
             if let error = error {
                 NSLog("Transcription error: \(error)")
                 return
@@ -740,6 +744,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
         request.httpBody = body
         URLSession.shared.dataTask(with: request) { data, response, error in
+            // Always clean up the temp audio file once we've sent it (or failed to)
+            // — security/privacy hardening: avoid leaving recordings on disk forever.
+            defer { try? FileManager.default.removeItem(at: fileURL) }
+
             if let error = error {
                 NSLog("Instruction transcription error: \(error)")
                 return

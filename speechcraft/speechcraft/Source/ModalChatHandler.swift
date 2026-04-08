@@ -205,6 +205,10 @@ Use paragraphs separated by blank lines and horizontal rules as '---'.
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
         request.httpBody = body
         URLSession.shared.dataTask(with: request) { data, _, error in
+            // Always clean up the temp audio file once we've sent it (or failed to)
+            // — security/privacy hardening: avoid leaving recordings on disk forever.
+            defer { try? FileManager.default.removeItem(at: fileURL) }
+
             var text = ""
             if let err = error {
                 NSLog("getTranscription error: \(err)")
