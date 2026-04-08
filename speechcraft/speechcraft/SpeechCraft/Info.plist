@@ -12,5 +12,31 @@
 	<string>SpeechCraft needs to send AppleScript commands to other apps (e.g. Mail) to automate your instructions.</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSServices</key>
+	<array>
+		<dict>
+			<key>NSMenuItem</key>
+			<dict>
+				<key>default</key>
+				<string>SpeechCraft: Read Aloud</string>
+			</dict>
+			<key>NSMessage</key>
+			<string>speakSelectionService</string>
+			<key>NSPortName</key>
+			<string>SpeechCraft</string>
+			<key>NSRequiredContext</key>
+			<dict>
+				<key>NSTextContent</key>
+				<string>PlainText</string>
+			</dict>
+			<key>NSSendTypes</key>
+			<array>
+				<string>public.plain-text</string>
+				<string>NSStringPboardType</string>
+			</array>
+			<key>NSReturnTypes</key>
+			<array/>
+		</dict>
+	</array>
 </dict>
 </plist>

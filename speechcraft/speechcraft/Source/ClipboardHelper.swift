@@ -4,14 +4,65 @@ import ApplicationServices
 
 extension AppDelegate {
 
+    // MARK: - Services (right-click Read Aloud)
+
+    /// macOS Services entry point: invoked when the user picks
+    /// "SpeechCraft: Read Aloud" from a right-click Services menu.
+    ///
+    /// The selected text arrives on the passed `NSPasteboard` (NOT the
+    /// general pasteboard), which is important: we read from here and
+    /// DON'T need to save/restore the user's clipboard, because this
+    /// pasteboard is scoped to the service invocation.
+    ///
+    /// Signature is dictated by macOS's service dispatching — the method
+    /// name is `speakSelectionService`, and macOS calls it as
+    /// `speakSelectionService:userData:error:` via the Objective-C runtime.
+    /// The `@objc` attribute makes it visible to Cocoa.
+    @objc func speakSelectionService(
+        _ pboard: NSPasteboard,
+        userData: String,
+        error: AutoreleasingUnsafeMutablePointer<NSString>
+    ) {
+        guard let text = pboard.string(forType: .string), !text.isEmpty else {
+            error.pointee = "No text selected to read aloud." as NSString
+            return
+        }
+        // Route through the same dispatcher as Right Command's old TTS
+        // behavior — honors the "local" vs "openai" TTSEngine preference
+        // and any voice selection the user has configured.
+        speak(text)
+    }
+
     // MARK: - Speak Selection (TTS)
+
+    /// Returns true if any TTS engine is currently producing audio, regardless
+    /// of whether it's local AVSpeech or OpenAI cloud TTS.
+    private var isCurrentlySpeaking: Bool {
+        (speechSynth?.isSpeaking == true) || (ttsAudioPlayer?.isPlaying == true)
+    }
+
+    /// Stops whichever TTS engine is currently speaking (if any). Also cleans
+    /// up any leftover temp audio file from an OpenAI playback.
+    private func stopCurrentSpeech() {
+        if speechSynth?.isSpeaking == true {
+            speechSynth?.stopSpeaking(at: .immediate)
+        }
+        if ttsAudioPlayer?.isPlaying == true {
+            ttsAudioPlayer?.stop()
+        }
+        ttsAudioPlayer = nil
+        if let url = ttsAudioFileURL {
+            try? FileManager.default.removeItem(at: url)
+            ttsAudioFileURL = nil
+        }
+    }
 
     /// Toggles speak-selection: if TTS is currently speaking, stop; otherwise
     /// capture the selected text from the frontmost app and start speaking it.
     /// Triggered by a lone Right Command tap (see handleEvent in AppDelegate).
     func toggleSpeakSelection() {
-        if speechSynth?.isSpeaking == true {
-            speechSynth?.stopSpeaking(at: .immediate)
+        if isCurrentlySpeaking {
+            stopCurrentSpeech()
             return
         }
         speakCurrentSelection()
@@ -62,25 +113,37 @@ extension AppDelegate {
         }
     }
 
-    /// Speaks the given text via AVSpeechSynthesizer using the best available
-    /// system voice. Prefers the "Premium" Ava voice introduced in macOS 14+
-    /// when installed; otherwise falls back to the default en-US voice.
+    /// Speaks the given text using the TTS engine selected in Preferences.
+    /// Dispatcher: "local" uses AVSpeechSynthesizer (free, offline, decent quality),
+    /// "openai" uses the gpt-4o-mini-tts API (costs ~$0.015/min, requires network,
+    /// dramatically better quality). Falls back to local if OpenAI is selected
+    /// but the API key is missing or the call fails.
     private func speak(_ text: String) {
-        // Lazily instantiate the synthesizer on first use
+        let engine = UserDefaults.standard.string(forKey: "TTSEngine") ?? "local"
+
+        if engine == "openai", let key = openAIKey, !key.isEmpty {
+            speakViaOpenAI(text, apiKey: key)
+        } else {
+            if engine == "openai" {
+                NSLog("[SpeechCraft-TTS] OpenAI engine selected but no API key — falling back to local")
+            }
+            speakLocally(text)
+        }
+    }
+
+    /// Speaks text via macOS's built-in AVSpeechSynthesizer using the best
+    /// available installed voice. Prefers "Premium" neural voices introduced
+    /// in macOS Sonoma (14+); falls back progressively to Enhanced voices and
+    /// finally the default en-US voice. Runs fully offline, zero cost.
+    private func speakLocally(_ text: String) {
         if speechSynth == nil {
             speechSynth = AVSpeechSynthesizer()
         }
-
-        // Stop any in-progress speech before starting new speech
         if speechSynth?.isSpeaking == true {
             speechSynth?.stopSpeaking(at: .immediate)
         }
 
         let utterance = AVSpeechUtterance(string: text)
-
-        // Pick the best voice. Premium voices were introduced in macOS Sonoma (14)
-        // and sound dramatically better than the classic synthesized voices.
-        // Fall back gracefully on older systems or voices the user hasn't downloaded.
         let preferredVoices = [
             "com.apple.voice.premium.en-US.Ava",
             "com.apple.voice.enhanced.en-US.Ava",
@@ -97,13 +160,97 @@ extension AppDelegate {
         if utterance.voice == nil {
             utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
         }
-
-        // Default rate (0.5) sounds robotic — bump slightly for a more natural cadence
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
         utterance.volume = 1.0
 
-        NSLog("[SpeechCraft-TTS] speaking \(text.count) characters with voice \(utterance.voice?.identifier ?? "default")")
+        NSLog("[SpeechCraft-TTS] local speak \(text.count) chars via \(utterance.voice?.identifier ?? "default")")
         speechSynth?.speak(utterance)
+    }
+
+    /// Speaks text via OpenAI's gpt-4o-mini-tts model over HTTPS.
+    /// Posts to https://api.openai.com/v1/audio/speech with the text and
+    /// selected voice, receives MP3 bytes in the response body, writes to
+    /// a temp file, and plays via AVAudioPlayer. On any failure (network,
+    /// auth, decode) logs the error and falls back to local TTS so the
+    /// feature stays useful even when offline.
+    ///
+    /// Pricing (Apr 2026): $0.60/1M input tokens + $12/1M audio tokens,
+    /// approximately $0.015 per minute of generated audio. Typical
+    /// selection (100 words, ~20 seconds of speech) costs ~$0.005.
+    private func speakViaOpenAI(_ text: String, apiKey: String) {
+        let voice = UserDefaults.standard.string(forKey: "TTSOpenAIVoice") ?? "nova"
+        let endpoint = URL(string: "https://api.openai.com/v1/audio/speech")!
+
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body: [String: Any] = [
+            "model": "gpt-4o-mini-tts",
+            "input": text,
+            "voice": voice,
+            "response_format": "mp3"
+        ]
+        guard let bodyData = try? JSONSerialization.data(withJSONObject: body) else {
+            NSLog("[SpeechCraft-TTS] failed to encode request body — falling back to local")
+            speakLocally(text)
+            return
+        }
+        request.httpBody = bodyData
+
+        NSLog("[SpeechCraft-TTS] openai speak \(text.count) chars with voice \(voice)")
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+
+            if let error = error {
+                NSLog("[SpeechCraft-TTS] openai network error: \(error.localizedDescription) — falling back to local")
+                DispatchQueue.main.async { self.speakLocally(text) }
+                return
+            }
+
+            if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+                let bodyString = data.flatMap { String(data: $0, encoding: .utf8) } ?? "(no body)"
+                NSLog("[SpeechCraft-TTS] openai returned \(http.statusCode): \(bodyString) — falling back to local")
+                DispatchQueue.main.async { self.speakLocally(text) }
+                return
+            }
+
+            guard let audioData = data, audioData.count > 0 else {
+                NSLog("[SpeechCraft-TTS] openai returned empty audio — falling back to local")
+                DispatchQueue.main.async { self.speakLocally(text) }
+                return
+            }
+
+            // Write MP3 to a temp file and play via AVAudioPlayer.
+            // We use a file rather than Data(contentsOf:) because
+            // AVAudioPlayer(data:) can fail on some MP3 streams from
+            // OpenAI while AVAudioPlayer(contentsOf:) handles them reliably.
+            let tmpDir = FileManager.default.temporaryDirectory
+            let tmpURL = tmpDir.appendingPathComponent("speechcraft_tts_\(UUID().uuidString).mp3")
+            do {
+                try audioData.write(to: tmpURL)
+            } catch {
+                NSLog("[SpeechCraft-TTS] failed to write temp audio file: \(error) — falling back to local")
+                DispatchQueue.main.async { self.speakLocally(text) }
+                return
+            }
+
+            DispatchQueue.main.async {
+                do {
+                    let player = try AVAudioPlayer(contentsOf: tmpURL)
+                    self.ttsAudioPlayer = player
+                    self.ttsAudioFileURL = tmpURL
+                    player.volume = 1.0
+                    player.prepareToPlay()
+                    player.play()
+                } catch {
+                    NSLog("[SpeechCraft-TTS] AVAudioPlayer init failed: \(error) — falling back to local")
+                    try? FileManager.default.removeItem(at: tmpURL)
+                    self.speakLocally(text)
+                }
+            }
+        }.resume()
     }
 
     // MARK: - Transcript Insertion
@@ -161,6 +308,18 @@ extension AppDelegate {
                 pasteboard.setString(prev, forType: .string)
             }
         }
+
+        // PTT auto-submit: if the previous PTT release armed this flag, fire a
+        // Return keypress after the paste has had time to land. 120ms delay
+        // matches our other "wait for simulated key event to propagate" hooks.
+        // The flag is always cleared here regardless of whether we fire, so a
+        // single arm only triggers a single submit.
+        if pendingAutoSubmit {
+            pendingAutoSubmit = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+                self?.simulateReturn()
+            }
+        }
     }
 
     /// Simulates a Cmd+V paste keystroke.
@@ -173,6 +332,35 @@ extension AppDelegate {
         }
         if let keyUp = CGEvent(keyboardEventSource: src, virtualKey: vKeyCode, keyDown: false) {
             keyUp.flags = .maskCommand
+            keyUp.post(tap: .cghidEventTap)
+        }
+    }
+
+    /// Simulates a Return / Enter keystroke (not keypad Enter).
+    /// Used by the PTT auto-submit feature to press Return after pasting
+    /// the transcribed text, so dictated chat messages / form entries can
+    /// be submitted in a single press-hold-release motion.
+    ///
+    /// IMPORTANT: we explicitly clear `flags` to an empty CGEventFlags.
+    /// Without this, the Return event can inherit leftover modifier state
+    /// from the previous simulatePaste call (which held Cmd down for the
+    /// Cmd+V paste) — the target app would then receive Cmd+Return instead
+    /// of a plain Return and do the wrong thing (or nothing at all). The
+    /// explicit empty-flags override forces the event to go out as a
+    /// standalone Return regardless of any lingering CGEvent session state.
+    ///
+    /// We also use `.privateState` for the event source instead of
+    /// `.hidSystemState` so our synthetic events don't share modifier state
+    /// with the real hardware event stream — cleaner isolation.
+    func simulateReturn() {
+        let src = CGEventSource(stateID: .privateState)
+        let returnKeyCode: CGKeyCode = 36
+        if let keyDown = CGEvent(keyboardEventSource: src, virtualKey: returnKeyCode, keyDown: true) {
+            keyDown.flags = CGEventFlags()
+            keyDown.post(tap: .cghidEventTap)
+        }
+        if let keyUp = CGEvent(keyboardEventSource: src, virtualKey: returnKeyCode, keyDown: false) {
+            keyUp.flags = CGEventFlags()
             keyUp.post(tap: .cghidEventTap)
         }
     }

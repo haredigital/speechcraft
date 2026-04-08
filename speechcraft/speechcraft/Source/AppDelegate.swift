@@ -27,6 +27,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// (AppleFnUsageType=3) BEFORE user event taps see it. Right Option has no default
     /// system behavior and is rarely used for shortcuts (Left Option = 58 handles those).
     private static let rightOptionKeyCode: Int64 = 61
+    /// Virtual keycode for the ISO Section key (§ on UK/European keyboards,
+    /// physical position to the left of the 1 key). When the user taps this
+    /// alone, we intercept it and synthesize Cmd+Ctrl+Shift+4 to trigger
+    /// macOS's region-screenshot-to-clipboard gesture. On US ANSI keyboards
+    /// this keycode doesn't correspond to a physical key, so the binding
+    /// is a no-op on those layouts.
+    private static let isoSectionKeyCode: Int64 = 10
+    /// Virtual keycode for the "4" key on the number row. Used to synthesize
+    /// Cmd+Ctrl+Shift+4 when the user taps the § key.
+    private static let fourKeyCode: CGKeyCode = 21
     /// Virtual keycode for the Right Command key. Used as the "speak selection" (TTS)
     /// trigger. Tap (without any other key) to speak the current selection via
     /// AVSpeechSynthesizer; tap again to stop. Chord detection (see chordDetectedWhile-
@@ -42,20 +52,38 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// ignored — this prevents a stray Right Option tap from cancelling a toggle-started
     /// recording.
     private var recordingStartedByPtt = false
-    /// Tracks Right Command press state for the "tap to speak selection" hotkey.
+    /// Tracks Right Command press state for the push-to-talk hotkey.
     /// Toggled on each flagsChanged event with keycode 54.
-    /// `internal` (default) rather than `private` so ClipboardHelper.swift
-    /// extension methods can read it.
+    /// Unlike Right Option's PTT, Right Command does NOT auto-submit on release
+    /// regardless of the PTTAutoSubmitOnRelease preference. It's the "record
+    /// without submit" variant for code editors, long-form writing, and any
+    /// context where pressing Return would be destructive.
     var isRightCmdPressed = false
-    /// Chord-detection flag: set true when a keyDown fires while Right Command is
-    /// held. If true on release, the press was part of a Cmd-chord shortcut
-    /// (e.g. Cmd+C) and we do NOT fire the TTS action. Reset on each fresh press.
-    var chordDetectedWhileRightCmdHeld = false
-    /// Lazily created speech synthesizer used by the "speak selection" feature.
-    /// AVSpeechSynthesizer requires no entitlements and makes no network calls —
-    /// all voice rendering happens locally via macOS TTS engines. Non-private so
-    /// the extension methods in ClipboardHelper.swift can access it.
+    /// Parallel to recordingStartedByPtt but for Right Command PTT. Ensures
+    /// that releasing Right Command only stops recordings it started, not
+    /// recordings started via Right Option toggle or Option+S hotkey.
+    var recordingStartedByRightCmdPtt = false
+    /// Lazily created speech synthesizer used by the "speak selection" feature
+    /// when TTSEngine preference is set to "local". AVSpeechSynthesizer requires
+    /// no entitlements and makes no network calls — all voice rendering happens
+    /// locally via macOS TTS engines. Non-private so the extension methods in
+    /// ClipboardHelper.swift can access it.
     var speechSynth: AVSpeechSynthesizer?
+    /// Audio player used for OpenAI TTS playback (MP3 bytes from the
+    /// /v1/audio/speech endpoint). Non-private for the same reason — accessed
+    /// from the ClipboardHelper extension. Stored at instance level so the
+    /// "tap again to stop" toggle can reach in and stop playback.
+    var ttsAudioPlayer: AVAudioPlayer?
+    /// Temp file URL for the current OpenAI TTS playback. Cleaned up after
+    /// playback completes or is stopped.
+    var ttsAudioFileURL: URL?
+
+    /// When true, the NEXT insertTranscript() call will simulate a Return keypress
+    /// shortly after pasting the transcribed text. Set by the PTT release handler
+    /// when "PTTAutoSubmitOnRelease" is enabled; cleared by insertTranscript after
+    /// firing. Only the regular dictation path consults this flag — instruction,
+    /// modal, and script hotkeys never auto-submit.
+    var pendingAutoSubmit = false
 
     /// Tracks whether the most recent insertTranscript() call ended with actual
     /// whitespace (space, tab, newline). Used to decide whether the NEXT insertion
@@ -183,7 +211,42 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     // MARK: - Transcription State
     var transcribeState: TranscribeState = .ready {
-        didSet { updateStatusIcon() }
+        didSet {
+            updateStatusIcon()
+            updateRecordingOverlay()
+        }
+    }
+
+    /// Floating on-screen indicator shown while dictation is active.
+    /// Pre-created at app launch (see applicationDidFinishLaunching) so the
+    /// first dictation doesn't pay NSPanel/SwiftUI initialization cost on
+    /// the main thread. Lives for the app lifetime.
+    var recordingOverlay: RecordingOverlayWindow?
+
+    /// Watches the screenshot directory for new screenshots and auto-copies
+    /// them to the clipboard. Created lazily at launch if
+    /// "AutoCopyScreenshots" preference is enabled.
+    var screenshotWatcher: ScreenshotWatcher?
+
+    /// Drives the recording overlay based on the current transcribeState.
+    /// Shows a "Listening…" pill during recording, morphs to "Transcribing…"
+    /// once the upload starts, and hides when we return to ready or error.
+    /// Appearance is instant (no fade-in) to eliminate any perceived latency;
+    /// fade-out remains animated because hide latency doesn't matter.
+    func updateRecordingOverlay() {
+        guard let overlay = recordingOverlay else { return }
+        switch transcribeState {
+        case .recording:
+            overlay.show(mode: .recording)
+        case .transcribing:
+            if overlay.isVisible {
+                overlay.updateMode(.transcribing)
+            } else {
+                overlay.show(mode: .transcribing)
+            }
+        case .ready, .error:
+            overlay.hide()
+        }
     }
 
     // MARK: Configuration Check
@@ -209,12 +272,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // One-time credential migration: move any API keys from plain UserDefaults
-        // to the macOS Keychain. Idempotent — safe to run on every launch.
-        // See KeychainStore.swift for details.
-        KeychainStore.migrateFromUserDefaults(keys: ["OpenAIKey", "AzureKey"])
-
-        // Register default preferences
+        // Register default preferences FIRST, before any other code reads
+        // preference values. register(defaults:) provides fallback values for
+        // unset keys, but only for reads that happen AFTER this call. If we
+        // read a preference before registering defaults, we get the default
+        // default (false/0/nil) instead of our registered default. This bit
+        // us hard on AutoCopyScreenshots: we read it before registering, got
+        // false, and never started the watcher.
         UserDefaults.standard.register(defaults: [
             // Include screenshots in GPT requests by default
             "EnableScreenshots": true,
@@ -223,6 +287,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             "SilenceTimeout": 2.0,
             // Default transcription model — gpt-4o-mini-transcribe for cost/accuracy balance
             "TranscriptionModel": "gpt-4o-mini-transcribe",
+            // Default to auto-submit (press Return) on PTT release. Turn off in
+            // Preferences if dictating into apps where Enter would be destructive
+            // (code editors, long-form writing, etc.).
+            "PTTAutoSubmitOnRelease": true,
+            // Default to auto-copying new screenshots to the clipboard. The
+            // original file still lands in the screenshot save location
+            // (usually ~/Desktop) — this just adds the image to the pasteboard
+            // so it can be pasted without opening the file.
+            "AutoCopyScreenshots": true,
+            // Default to binding the § key (ISO keycode 10, to the left of 1
+            // on UK/European Mac keyboards) to trigger Cmd+Ctrl+Shift+4
+            // (region screenshot → clipboard). Turn off if you need to type §
+            // literally or are on a US keyboard (where it's a no-op anyway).
+            "SectionKeyTriggersScreenshot": true,
             // New default: enable GPT-4o proofreading of transcripts
             "EnableProofreading": true,
             // Default model for proofreading — mini variant to keep costs low
@@ -232,6 +310,31 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // Default prompt for AppleScript generation: include activation of target apps
             "ScriptPrompt": "You are an assistant that generates AppleScript commands for macOS based on provided instructions. Always launch or activate the target application before issuing commands (e.g., 'tell application \"AppName\" to activate'). Only output valid AppleScript code without additional explanation."
         ])
+
+        // Register as the macOS Services provider for "SpeechCraft: Read Aloud".
+        NSApp.servicesProvider = self
+        NSUpdateDynamicServices()
+
+        // One-time credential migration: move any API keys from plain UserDefaults
+        // to the macOS Keychain. Idempotent — safe to run on every launch.
+        KeychainStore.migrateFromUserDefaults(keys: ["OpenAIKey", "AzureKey"])
+
+        // Pre-create the recording overlay window ahead of first dictation so
+        // the NSPanel + SwiftUI initialization cost (~30-80ms) is paid at
+        // launch rather than on the user's first press of Right Option.
+        recordingOverlay = RecordingOverlayWindow()
+
+        // Start the screenshot watcher if enabled. It monitors the screenshot
+        // save directory (usually ~/Desktop) and auto-copies new screenshot
+        // files to the clipboard so the user can paste them into other apps
+        // without having to open the file first. Reading the preference AFTER
+        // the register(defaults:) call above ensures we see the registered
+        // default of true for first-launch users.
+        if UserDefaults.standard.bool(forKey: "AutoCopyScreenshots") {
+            screenshotWatcher = ScreenshotWatcher()
+            screenshotWatcher?.start()
+        }
+
         // Check and request Accessibility permission
         let options = [kAXTrustedCheckOptionPrompt.takeRetainedValue() as String: true] as CFDictionary
         if !AXIsProcessTrustedWithOptions(options) {
@@ -317,20 +420,39 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if type == .flagsChanged {
             let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
 
-            // Right Command — "tap alone to speak selection" (TTS).
-            // We track press and release to detect whether the press was a
-            // standalone tap (no other keys pressed while Cmd was held) or
-            // part of a chord like Cmd+C. Only standalone taps fire TTS.
+            // Right Command — push-to-talk recording WITHOUT auto-submit.
+            // Identical to Right Option PTT except it never arms the
+            // pendingAutoSubmit flag, so the transcribed text is pasted
+            // without pressing Return afterward. Use this hotkey when
+            // dictating into code editors, long-form writing, or any
+            // context where an accidental Return would break things.
+            //
+            // Cmd+letter chord shortcuts (Cmd+C, Cmd+V, etc.) continue
+            // to work normally while Right Command is held — our event
+            // tap passes those keyDowns through to the active app
+            // unchanged. The recording continues in parallel with any
+            // accidental chord presses.
+            //
+            // Speak Selection / Read Aloud (formerly triggered by a
+            // lone Right Command tap) has moved to the right-click
+            // Services menu. See NSServices entry in Info.plist.
             if keyCode == Self.rightCommandKeyCode {
                 isRightCmdPressed.toggle()
                 if isRightCmdPressed {
-                    // Press: start fresh chord tracking
-                    chordDetectedWhileRightCmdHeld = false
+                    // Press → start recording if idle and configured
+                    if !isRecording && transcribeState == .ready {
+                        startRecording()
+                        isRecording = true
+                        recordingStartedByRightCmdPtt = true
+                    }
                 } else {
-                    // Release: if no other key fired while Cmd was held,
-                    // this was a lone Right Command tap — fire TTS toggle.
-                    if !chordDetectedWhileRightCmdHeld {
-                        toggleSpeakSelection()
+                    // Release → stop recording if Right Cmd owns it.
+                    // Critically: do NOT arm pendingAutoSubmit — this
+                    // is the "no Return" variant.
+                    if isRecording && recordingStartedByRightCmdPtt {
+                        stopRecording()
+                        isRecording = false
+                        recordingStartedByRightCmdPtt = false
                     }
                 }
                 return Unmanaged.passUnretained(event)
@@ -350,6 +472,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 } else {
                     // Just released → stop only if PTT owns this recording
                     if isRecording && recordingStartedByPtt {
+                        // Arm the auto-submit flag if the preference is on.
+                        // insertTranscript() will check and clear this after pasting.
+                        if UserDefaults.standard.bool(forKey: "PTTAutoSubmitOnRelease") {
+                            pendingAutoSubmit = true
+                        }
                         stopRecording()
                         isRecording = false
                         recordingStartedByPtt = false
@@ -360,16 +487,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         if type == .keyDown {
-            // If Right Command is currently held and we see any keyDown,
-            // mark the Cmd-tap as a chord — on release we will NOT fire TTS.
-            // This preserves Cmd+C, Cmd+V, and other shortcut behavior.
-            if isRightCmdPressed {
-                chordDetectedWhileRightCmdHeld = true
-            }
             // Filter to modifier bits only
             let maskFlags: CGEventFlags = [.maskCommand, .maskAlternate, .maskControl, .maskShift]
             let rawFlags = event.flags.intersection(maskFlags)
             let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+
+            // § key → Cmd+Ctrl+Shift+4 (region screenshot to clipboard).
+            // On UK/European ISO keyboards the § key sits to the left of 1;
+            // on US keyboards keycode 10 doesn't exist so this is a no-op.
+            // We only fire on a clean § tap (no other modifiers held) to
+            // avoid hijacking Shift+§ (which types ±) or Alt+§.
+            if keyCode == Self.isoSectionKeyCode && rawFlags.rawValue == 0
+                && UserDefaults.standard.bool(forKey: "SectionKeyTriggersScreenshot") {
+                triggerRegionScreenshotToClipboard()
+                return nil  // consume the § press, don't let it type anything
+            }
+
             // If unconfigured, open Settings on either hotkey
             if transcribeState == .error {
                 if keyCode == recordHotKey.keyCode && rawFlags.rawValue == recordHotKey.modifiers {
@@ -399,6 +532,28 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return Unmanaged.passUnretained(event)
     }
     
+    /// Synthesizes a Cmd+Ctrl+Shift+4 keystroke, which macOS interprets as
+    /// "start a region screenshot and copy the result to the clipboard"
+    /// (the Ctrl modifier is what differentiates clipboard-copy from the
+    /// default save-to-file behavior of Cmd+Shift+4).
+    ///
+    /// Uses `.privateState` source + explicit flags (lessons learned from
+    /// the simulateReturn modifier-contamination bug) to ensure the event
+    /// goes out exactly as we intend, with no leftover modifier state from
+    /// previous synthetic events.
+    func triggerRegionScreenshotToClipboard() {
+        let src = CGEventSource(stateID: .privateState)
+        let modifiers: CGEventFlags = [.maskCommand, .maskControl, .maskShift]
+        if let keyDown = CGEvent(keyboardEventSource: src, virtualKey: Self.fourKeyCode, keyDown: true) {
+            keyDown.flags = modifiers
+            keyDown.post(tap: .cghidEventTap)
+        }
+        if let keyUp = CGEvent(keyboardEventSource: src, virtualKey: Self.fourKeyCode, keyDown: false) {
+            keyUp.flags = modifiers
+            keyUp.post(tap: .cghidEventTap)
+        }
+    }
+
     func toggleRecording() {
         if !isRecording {
             startRecording()

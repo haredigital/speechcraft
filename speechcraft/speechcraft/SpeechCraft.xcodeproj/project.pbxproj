@@ -8,6 +8,8 @@
 
 /* Begin PBXBuildFile section */
 		1ED31205E8697569A9A0F979 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1237636B61E66DE9815CAF92 /* KeychainStore.swift */; };
+		473AD8D8C7ABE2171512D5B1 /* RecordingOverlayWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C6816D5ABBEB5038A3A01D6 /* RecordingOverlayWindow.swift */; };
+		4A0E2E931EAE479E7A082692 /* ScreenshotWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86BBC44F7DB23B5632EAADE8 /* ScreenshotWatcher.swift */; };
 		F9C02B262DB0EDFC00D6665F /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9C02B242DB0EDFC00D6665F /* AppDelegate.swift */; };
 		F9C02B272DB0EDFC00D6665F /* SpeechCraftApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9C02B252DB0EDFC00D6665F /* SpeechCraftApp.swift */; };
 		F9C02B2A2DB0EE4E00D6665F /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F9C02B292DB0EE4E00D6665F /* AVFoundation.framework */; };
@@ -23,6 +25,8 @@
 
 /* Begin PBXFileReference section */
 		1237636B61E66DE9815CAF92 /* KeychainStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
+		86BBC44F7DB23B5632EAADE8 /* ScreenshotWatcher.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ScreenshotWatcher.swift; sourceTree = "<group>"; };
+		9C6816D5ABBEB5038A3A01D6 /* RecordingOverlayWindow.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RecordingOverlayWindow.swift; sourceTree = "<group>"; };
 		F9C02B132DB0ED1F00D6665F /* SpeechCraft.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SpeechCraft.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F9C02B242DB0EDFC00D6665F /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		F9C02B252DB0EDFC00D6665F /* SpeechCraftApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechCraftApp.swift; sourceTree = "<group>"; };
@@ -111,6 +115,8 @@
 				F9C02B252DB0EDFC00D6665F /* SpeechCraftApp.swift */,
 				F9C02B352DB107D400D6665F /* PreferencesView.swift */,
 				1237636B61E66DE9815CAF92 /* KeychainStore.swift */,
+				9C6816D5ABBEB5038A3A01D6 /* RecordingOverlayWindow.swift */,
+				86BBC44F7DB23B5632EAADE8 /* ScreenshotWatcher.swift */,
 			);
 			path = Source;
 			sourceTree = "<group>";
@@ -201,6 +207,8 @@
 				F9C02B362DB107D400D6665F /* PreferencesView.swift in Sources */,
 				F9C02B272DB0EDFC00D6665F /* SpeechCraftApp.swift in Sources */,
 				1ED31205E8697569A9A0F979 /* KeychainStore.swift in Sources */,
+				473AD8D8C7ABE2171512D5B1 /* RecordingOverlayWindow.swift in Sources */,
+				4A0E2E931EAE479E7A082692 /* ScreenshotWatcher.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

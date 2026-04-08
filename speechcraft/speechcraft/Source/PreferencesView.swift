@@ -64,6 +64,10 @@ struct GeneralSettingsView: View {
     @AppStorage("EnableAutoSilenceStop") private var enableAutoSilenceStop: Bool = false
     // Duration of silence (in seconds) before auto-stop
     @AppStorage("SilenceTimeout") private var silenceTimeout: Double = 2.0
+    // Auto-copy new screenshots to the system clipboard
+    @AppStorage("AutoCopyScreenshots") private var autoCopyScreenshots: Bool = true
+    // § key binding: when true, tapping § fires Cmd+Ctrl+Shift+4
+    @AppStorage("SectionKeyTriggersScreenshot") private var sectionKeyTriggersScreenshot: Bool = true
 
     // Hardened: API keys live in Keychain, not UserDefaults.
     // We mirror them into local @State so SwiftUI can bind, and write back
@@ -105,6 +109,18 @@ struct GeneralSettingsView: View {
                 }
                 .disabled(!enableAutoSilenceStop)
             }
+
+            Section(header: Text("Screenshots")) {
+                Toggle("Auto-copy new screenshots to clipboard", isOn: $autoCopyScreenshots)
+                Text("When you take a screenshot with ⌘⇧4 or ⌘⇧3, the file still saves to your screenshot folder AND the image is placed on the clipboard so you can paste it immediately. Takes effect on next app launch.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                Toggle("Bind § key to region screenshot (⌘⌃⇧4)", isOn: $sectionKeyTriggersScreenshot)
+                Text("Tap the § key (to the left of 1 on UK/European Mac keyboards) to trigger a region screenshot that copies directly to the clipboard. On US keyboards this is a no-op — keycode 10 doesn't exist on ANSI layouts.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
         }
         .padding()
     }
@@ -120,29 +136,55 @@ struct TranscriptionSettingsView: View {
     @AppStorage("EnableProofreading") private var enableProofreading: Bool = true
     // Model selection for GPT-4o proofreading
     @AppStorage("ProofreadingModel") private var proofreadingModel: String = "gpt-4o"
+    // "Speak Selection" TTS engine: "local" (AVSpeechSynthesizer, free/offline)
+    // or "openai" (gpt-4o-mini-tts, better quality, ~$0.015/min).
+    @AppStorage("TTSEngine") private var ttsEngine: String = "local"
+    // Voice identifier for OpenAI TTS. See speakViaOpenAI in ClipboardHelper.swift.
+    @AppStorage("TTSOpenAIVoice") private var ttsOpenAIVoice: String = "nova"
     private let proofreadingModels = ["gpt-4o", "gpt-4o-mini"]
     private let availableModels = ["gpt-4o-transcribe", "gpt-4o-mini-transcribe", "whisper"]
+    private let openAIVoices = [
+        "alloy", "ash", "ballad", "coral", "echo", "fable",
+        "nova", "onyx", "sage", "shimmer", "verse"
+    ]
 
     var body: some View {
         Form {
-            Picker("Transcription Model", selection: $transcriptionModel) {
-                ForEach(availableModels, id: \.self) { model in
-                    Text(model).tag(model)
+            Section(header: Text("Transcription")) {
+                Picker("Model", selection: $transcriptionModel) {
+                    ForEach(availableModels, id: \.self) { model in
+                        Text(model).tag(model)
+                    }
                 }
-            }
-            .pickerStyle(PopUpButtonPickerStyle())
+                .pickerStyle(PopUpButtonPickerStyle())
 
-            TextField("Prompt (optional)", text: $transcriptionPrompt)
-            // Screenshot and proofread options
-            Toggle("Include screenshots in GPT requests", isOn: $enableScreenshots)
-            Toggle("Enable GPT-4o proofreading", isOn: $enableProofreading)
-            Picker("Proofreading Model", selection: $proofreadingModel) {
-                ForEach(proofreadingModels, id: \.self) { model in
-                    Text(model).tag(model)
+                TextField("Prompt (optional)", text: $transcriptionPrompt)
+                Toggle("Include screenshots in GPT requests", isOn: $enableScreenshots)
+                Toggle("Enable GPT-4o proofreading", isOn: $enableProofreading)
+                Picker("Proofreading Model", selection: $proofreadingModel) {
+                    ForEach(proofreadingModels, id: \.self) { model in
+                        Text(model).tag(model)
+                    }
                 }
+                .pickerStyle(PopUpButtonPickerStyle())
+                .disabled(!enableProofreading)
             }
-            .pickerStyle(PopUpButtonPickerStyle())
-            .disabled(!enableProofreading)
+
+            Section(header: Text("Speak Selection (Right Cmd)")) {
+                Picker("TTS Engine", selection: $ttsEngine) {
+                    Text("Local (macOS voices, free)").tag("local")
+                    Text("OpenAI gpt-4o-mini-tts (cloud, ~$0.015/min)").tag("openai")
+                }
+                .pickerStyle(PopUpButtonPickerStyle())
+
+                Picker("OpenAI Voice", selection: $ttsOpenAIVoice) {
+                    ForEach(openAIVoices, id: \.self) { voice in
+                        Text(voice).tag(voice)
+                    }
+                }
+                .pickerStyle(PopUpButtonPickerStyle())
+                .disabled(ttsEngine != "openai")
+            }
         }
         .padding()
     }
@@ -154,32 +196,45 @@ struct HotkeysSettingsView: View {
     @State private var instructionKeyDesc: String = ""
     @State private var modalKeyDesc: String = ""
     @State private var scriptKeyDesc: String = ""
+    // If true, the PTT release handler presses Return after pasting the
+    // transcribed text. Useful for chat apps and form submissions; turn off
+    // when dictating into code editors or long-form writing where Enter
+    // would be destructive (insert newline, break indentation, etc.).
+    @AppStorage("PTTAutoSubmitOnRelease") private var pttAutoSubmit: Bool = true
 
     var body: some View {
         Form {
-            HStack {
-                Text("Record Hotkey")
-                Spacer()
-                Text(recordKeyDesc)
-                Button("Change") { changeRecordHotkey() }
+            Section(header: Text("Push-to-Talk (Right Option)")) {
+                Toggle("Auto-submit on release (press Return after paste)", isOn: $pttAutoSubmit)
+                Text("Tip: turn this off when dictating into code editors, long-form writing, or any app where pressing Enter would be destructive.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
-            HStack {
-                Text("Instruction Hotkey")
-                Spacer()
-                Text(instructionKeyDesc)
-                Button("Change") { changeInstructionHotkey() }
-            }
-            HStack {
-                Text("Modal Hotkey")
-                Spacer()
-                Text(modalKeyDesc)
-                Button("Change") { changeModalHotkey() }
-            }
-            HStack {
-                Text("Script Hotkey")
-                Spacer()
-                Text(scriptKeyDesc)
-                Button("Change") { changeScriptHotkey() }
+            Section(header: Text("Hotkeys")) {
+                HStack {
+                    Text("Record Hotkey")
+                    Spacer()
+                    Text(recordKeyDesc)
+                    Button("Change") { changeRecordHotkey() }
+                }
+                HStack {
+                    Text("Instruction Hotkey")
+                    Spacer()
+                    Text(instructionKeyDesc)
+                    Button("Change") { changeInstructionHotkey() }
+                }
+                HStack {
+                    Text("Modal Hotkey")
+                    Spacer()
+                    Text(modalKeyDesc)
+                    Button("Change") { changeModalHotkey() }
+                }
+                HStack {
+                    Text("Script Hotkey")
+                    Spacer()
+                    Text(scriptKeyDesc)
+                    Button("Change") { changeScriptHotkey() }
+                }
             }
         }
         .padding()
