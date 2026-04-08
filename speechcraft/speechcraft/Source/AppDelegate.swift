@@ -915,6 +915,51 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // Filter to modifier bits only
             let maskMods: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
             let rawMods = UInt64(event.modifierFlags.intersection(maskMods).rawValue)
+
+            // Escape always cancels a hotkey capture without recording.
+            // Previously a bare Escape press would be saved as the new hotkey,
+            // silently binding recording to the Escape key and causing
+            // "Escape triggers SpeechCraft" chaos in every text field.
+            // Other "reserved" keys that should never be hotkeys are also
+            // rejected: Return, Tab, Delete, Backspace.
+            let reservedKeyCodes: Set<UInt16> = [
+                53,  // Escape
+                36,  // Return
+                76,  // Keypad Enter
+                48,  // Tab
+                51,  // Delete (Backspace)
+                117  // Forward Delete
+            ]
+            if reservedKeyCodes.contains(event.keyCode) {
+                self.captureType = nil
+                if let monitor = self.keyCaptureMonitor {
+                    NSEvent.removeMonitor(monitor)
+                    self.keyCaptureMonitor = nil
+                }
+                return nil  // swallow the Escape so it doesn't propagate
+            }
+
+            // Bare keys with no modifiers make terrible hotkeys — they'd fire
+            // every time the user types that letter anywhere. Require at least
+            // one modifier (Cmd, Option, Control, or Shift).
+            if rawMods == 0 {
+                self.captureType = nil
+                if let monitor = self.keyCaptureMonitor {
+                    NSEvent.removeMonitor(monitor)
+                    self.keyCaptureMonitor = nil
+                }
+                // Show a warning so the user knows why nothing happened
+                DispatchQueue.main.async {
+                    let alert = NSAlert()
+                    alert.messageText = "Hotkey not captured"
+                    alert.informativeText = "Hotkeys must include at least one modifier key (Command, Option, Control, or Shift). A bare key without modifiers would fire every time you typed that character."
+                    alert.alertStyle = .warning
+                    alert.addButton(withTitle: "OK")
+                    alert.runModal()
+                }
+                return nil
+            }
+
             let char = event.charactersIgnoringModifiers?.uppercased() ?? ""
             let hk = HotKey(keyCode: event.keyCode, modifiers: rawMods, character: char)
             switch type {
