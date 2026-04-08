@@ -342,8 +342,8 @@ Use paragraphs separated by blank lines and horizontal rules as '---'.
                       let msg = (first["message"] as? [String: Any])?["content"] as? String {
                 scriptCode = msg
             }
-            // Log generated AppleScript and execute with result display
-            NSLog("Generated AppleScript: \(scriptCode)")
+            // Log generated AppleScript (will require user approval before execution)
+            NSLog("Generated AppleScript (pending approval): \(scriptCode)")
             // Prepare script for execution (strip fences)
             var execCode = scriptCode.trimmingCharacters(in: .whitespacesAndNewlines)
             if execCode.hasPrefix("```") , let nl = execCode.firstIndex(of: "\n") {
@@ -354,33 +354,53 @@ Use paragraphs separated by blank lines and horizontal rules as '---'.
             }
             execCode = execCode.trimmingCharacters(in: .whitespacesAndNewlines)
 
-            NSLog("Executing AppleScript: \(execCode)")
-            // Execute and capture result or error
-            var resultString = ""
-            if let appleScript = NSAppleScript(source: execCode) {
-                var errDict: NSDictionary?
-                let descriptor = appleScript.executeAndReturnError(&errDict)
-                if let err = errDict as? [String: Any] {
-                    // Show AppleScript error in result
-                    NSLog("AppleScript execution error: \(err)")
-                    if let msg = err[NSAppleScript.errorMessage] as? String {
-                        resultString = "Error: \(msg)"
-                    } else {
-                        resultString = "Error: \(err)"
-                    }
-                } else {
-                    // No error, capture descriptor value
-                    resultString = descriptor.stringValue ?? ""
-                }
-            }
-            // Display script and result in one modal
+            // SECURITY GATE: never execute LLM-generated AppleScript without explicit
+            // user approval. The script is shown in a confirmation dialog and will
+            // only run if the user clicks "Run Script". This prevents prompt-injection
+            // attacks via the audio transcription path from achieving arbitrary code
+            // execution on the user's Mac. See SECURITY_AUDIT.md Finding 1.
             DispatchQueue.main.async {
+                let approved = self.confirmAppleScriptExecution(execCode)
+                if !approved {
+                    NSLog("AppleScript execution cancelled by user")
+                    let cancelMd = """
+### Generated AppleScript (NOT executed)
+
+```applescript
+\(scriptCode)
+```
+
+> Cancelled by user. The script was not run on your Mac.
+"""
+                    self.showModal(cancelMd)
+                    self.transcribeState = .ready
+                    return
+                }
+
+                NSLog("Executing AppleScript: \(execCode)")
+                // Execute and capture result or error
+                var resultString = ""
+                if let appleScript = NSAppleScript(source: execCode) {
+                    var errDict: NSDictionary?
+                    let descriptor = appleScript.executeAndReturnError(&errDict)
+                    if let err = errDict as? [String: Any] {
+                        // Show AppleScript error in result
+                        NSLog("AppleScript execution error: \(err)")
+                        if let msg = err[NSAppleScript.errorMessage] as? String {
+                            resultString = "Error: \(msg)"
+                        } else {
+                            resultString = "Error: \(err)"
+                        }
+                    } else {
+                        // No error, capture descriptor value
+                        resultString = descriptor.stringValue ?? ""
+                    }
+                }
                 let fullMd = """
 ### Generated AppleScript
 
 ```applescript
 \(scriptCode)
-
 ```
 
 ### Execution Result
@@ -393,6 +413,49 @@ Use paragraphs separated by blank lines and horizontal rules as '---'.
                 self.transcribeState = .ready
             }
         }.resume()
+    }
+
+    /// Show a modal confirmation dialog with the generated AppleScript and let the user
+    /// approve or cancel execution. Returns true if approved, false if cancelled.
+    /// Defaults to Cancel for safety — user must explicitly click Run Script.
+    private func confirmAppleScriptExecution(_ scriptCode: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Approve AppleScript execution?"
+        alert.informativeText = """
+SpeechCraft generated this AppleScript from your spoken instruction. Review it carefully — AppleScript can control any app on your Mac, including destructive operations like deleting files or sending emails.
+
+Only click "Run Script" if the code below matches what you intended.
+"""
+        alert.alertStyle = .warning
+
+        // Cancel is the default (safer); Run Script requires explicit choice
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Run Script")
+
+        // Show the script in a scrollable text view as the alert's accessory view
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 500, height: 200))
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = true
+        scrollView.borderType = .bezelBorder
+
+        let textView = NSTextView(frame: scrollView.bounds)
+        textView.string = scriptCode
+        textView.isEditable = false
+        textView.font = NSFont.userFixedPitchFont(ofSize: 12)
+        textView.isHorizontallyResizable = true
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
+                                                       height: CGFloat.greatestFiniteMagnitude)
+        textView.textContainer?.widthTracksTextView = false
+
+        scrollView.documentView = textView
+        alert.accessoryView = scrollView
+
+        let response = alert.runModal()
+        // First button (Cancel) returns .alertFirstButtonReturn,
+        // Second button (Run Script) returns .alertSecondButtonReturn
+        return response == .alertSecondButtonReturn
     }
     
     // MARK: - Window Delegate Cleanup
